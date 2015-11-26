@@ -157,6 +157,13 @@ def is_disk(dev, bspec=None, uspec=None):
     if bspec.get('ro') == '1':
         return False
 
+    # Filtering by multipath check
+    stdout, stderr = utils.execute('multipath', '-c', dev,
+                                   check_exit_code=False)
+    # look for "/dev/sda is a valid multipath device path"
+    if 'valid' in stdout:
+        return False
+
     return True
 
 
