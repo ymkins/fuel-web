@@ -83,7 +83,7 @@ def make_label(dev, label='gpt'):
     utils.execute('udevadm', 'settle', '--quiet', check_exit_code=[0])
     out, err = utils.execute('parted', '-s', dev, 'mklabel', label,
                              check_exit_code=[0, 1])
-    LOG.debug('Parted output: \n%s' % out)
+    LOG.debug('Parted output: \n%s \n%s' % (out, err))
     reread_partitions(dev, out=out)
 
 
@@ -112,7 +112,7 @@ def set_partition_flag(dev, num, flag, state='on'):
     utils.execute('udevadm', 'settle', '--quiet', check_exit_code=[0])
     out, err = utils.execute('parted', '-s', dev, 'set', str(num),
                              flag, state, check_exit_code=[0, 1])
-    LOG.debug('Parted output: \n%s' % out)
+    LOG.debug('Parted output: \n%s \n%s' % (out, err))
     reread_partitions(dev, out=out)
 
 
@@ -158,7 +158,7 @@ def make_partition(dev, begin, end, ptype):
     out, err = utils.execute(
         'parted', '-a', 'optimal', '-s', dev, 'unit', 'MiB',
         'mkpart', ptype, str(begin), str(end), check_exit_code=[0, 1])
-    LOG.debug('Parted output: \n%s' % out)
+    LOG.debug('Parted output: \n%s \n%s' % (out, err))
     reread_partitions(dev, out=out)
 
 
@@ -190,5 +190,5 @@ def reread_partitions(dev, out='Device or resource busy', timeout=60):
                   'Trying to re-read partition table on device %s' % dev)
         time.sleep(2)
         out, err = utils.execute('partprobe', dev, check_exit_code=[0, 1])
-        LOG.debug('Partprobe output: \n%s' % out)
+        LOG.debug('Partprobe output: \n%s \n%s' % (out, err))
         utils.execute('udevadm', 'settle', '--quiet', check_exit_code=[0])
