@@ -126,6 +126,21 @@ class Nailgun(BaseDataDriver):
         if not found or len(found) > 1:
             raise errors.DiskNotFoundError(
                 'Disk not found: %s' % ks_disk['name'])
+
+        # The devices in /dev/mapper are created early in the boot process.
+        # Use these devices to access the multipathed devices, for example when creating logical volumes.
+        # Any devices of the form /dev/dm-n are for internal use only and should never be used.
+        # https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/6/html/DM_Multipath/mpath_devices.html
+        stdout = utils.execute('lsblk', '-Pdo', 'NAME,KNAME,TYPE', found[0], check_exit_code=[0])[0]
+        # lsblk_dev = {k: v.strip('"') for (k, v) in (p.split('=') for p in stdout.split())}
+        lsblk_dev = {}
+        for p in stdout.split():
+            k, v = p.split('=')
+            lsblk_dev[k] = v.strip('"')
+
+        if lsblk_dev['TYPE'] == 'mpath':
+            return '/dev/mapper/%s' % lsblk_dev['NAME']
+
         return found[0]
 
     def _getlabel(self, label):
