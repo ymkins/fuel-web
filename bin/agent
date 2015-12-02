@@ -28,6 +28,7 @@ require 'ipaddr'
 require 'rethtool'
 require 'digest'
 require 'timeout'
+require 'open3'
 
 unless Process.euid == 0
   puts "You must be root"
@@ -267,32 +268,33 @@ class NodeAgent
     begin
       Timeout::timeout(30) do
         @logger.debug("Trying to find block devices")
-        (@os[:block_device] or {} rescue {}).each do |bname, binfo|
-          @logger.debug("Found block device: #{bname}")
-          @logger.debug("Block device info: #{binfo.inspect}")
-          if physical_data_storage_devices.map{|d| d[:name]}.include?(bname) && binfo
-            @logger.debug("Block device seems to be physical data storage: #{bname}")
-            block = physical_data_storage_devices.select{|d| d[:name] == bname}[0]
-            if block[:removable] =~ /^1$/ && ! REMOVABLE_VENDORS.include?(binfo[:vendor])
-              next
-            end
-            dname = bname.gsub(/!/, '/')
 
-            # 512 bytes is the size of one sector by default
-            block_size = 512
-            fn = "/sys/block/#{bname}/queue/logical_block_size"
-            block_size = File.read(fn).to_i if File.exist? fn
-            block_size = 512 if block_size == 0
-            detailed_meta[:disks] << {
-              :name => dname,
-              :model => binfo[:model],
-              :size => (binfo[:size].to_i * block_size),
-              :disk => block[:disk],
-              :extra => block[:extra],
-              :removable => block[:removable]
-            }
+        disks = _lsblk()
+        multipath = _multipath()
+
+        disks.each { |kname, h|
+          disk = h['KNAME']
+          name = h['NAME']
+          case h['TYPE']
+            when 'disk'
+              next if multipath[:devs][h['KNAME']]
+            when 'mpath'
+              disk = multipath[:maps_by_name][h['NAME']]
+              name = "mapper/#{h['NAME']}"
+            else
+              next
           end
-        end
+
+          detailed_meta[:disks] << {
+            :disk => disk,
+            :extra => _udev_symlink(h['KNAME']),
+            :model => h['MODEL'],
+            :name => name,
+            :removable => h['RM'],
+            :size => h['SIZE'].to_i,
+          }
+        }
+
         @logger.debug("Detailed meta disks: #{detailed_meta[:disks].inspect}")
       end
     rescue Exception => e
@@ -302,61 +304,58 @@ class NodeAgent
     detailed_meta
   end
 
-  def _disk_id_by_name(name)
-    dn = "/dev/disk/by-id"
-    basepath = Dir["#{dn}/**?"].select{|f| /\/#{name}$/.match(File.readlink(f))}
-    basepath.map{|p| p.split("/")[2..-1].join("/")}
+  def _lsblk(cmdline=nil)
+    cmdline ||= "lsblk -Pbo 'NAME,KNAME,MAJ:MIN,RM,SIZE,TYPE,MODEL'"
+    lsblk = {
+      # kname => {}
+    }
+
+    stdin, stdout, stderr = Open3.popen3(cmdline)
+    stdout.each_line { |line|
+      h = {}
+      line.scan(/([^\s=]+)="([^"]*)"/).each { |k, v|
+        h[k] = v
+      }
+      lsblk[h['KNAME']] = h
+    }
+
+    lsblk
   end
 
-  def _disk_path_by_name(name)
-    dn = "/dev/disk/by-path"
-    basepath = Dir["#{dn}/**?"].find{|f| /\/#{name}$/.match(File.readlink(f))}
-    basepath.split("/")[2..-1].join("/") if basepath
+  def _multipath
+    multipath = {
+      :devs => {
+        # dev => uuid
+      },
+      :maps => {
+        # uuid => name
+      },
+      :maps_by_name => {
+        # name => uuid
+      },
+    }
+
+    stdin, stdout, stderr = Open3.popen3(%q{multipathd -k'list maps format "%n;;%w"'})
+    stdout.each_line.with_index { |line, lineno|
+      next if lineno == 0
+      n, w = line.split(';;').map(&:strip)
+      multipath[:maps][w] = n
+      multipath[:maps_by_name][n] = w
+    }
+
+    stdin, stdout, stderr = Open3.popen3(%q{multipathd -k'list paths format "%d;;%w"'})
+    stdout.each_line.with_index { |line, lineno|
+      next if lineno == 0
+      d, w = line.split(';;').map(&:strip)
+      multipath[:devs][d] = w if multipath[:maps][w]
+    }
+
+    multipath
   end
 
-  def physical_data_storage_devices
-    @blocks ||= []
-    return @blocks unless @blocks.empty?
-
-    @logger.debug("Trying to get list of physical devices")
-    raise "Path /sys/block does not exist" unless File.exists?("/sys/block")
-
-    Dir["/sys/block/*"].each do |block_device_dir|
-      basename_dir = File.basename(block_device_dir)
-      # Entries in /sys/block for cciss look like cciss!c0d1 while
-      # the entries in /dev look like /dev/cciss/c0d1. udevadm uses
-      # the entry in /dev so we need to replace the ! to get a valid
-      # device name.
-      devname = basename_dir.gsub(/!/, '/')
-
-      @logger.debug("Getting udev properties for device: #{devname}")
-      properties = `udevadm info --query=property --export --name=#{devname}`.split("\n").inject({}) do |result, raw_propety|
-       key, value = raw_propety.split(/\=/)
-       result.update(key.strip => value.strip.chomp("'").reverse.chomp("'").reverse)
-      end
-      @logger.debug("Device #{devname} udev properties: #{properties.inspect}")
-
-      @logger.debug("Trying to find out if device #{devname} is removable or not")
-      if File.exists?("/sys/block/#{basename_dir}/removable")
-        removable = File.open("/sys/block/#{basename_dir}/removable"){ |f| f.read_nonblock(1024).strip }
-      end
-      @logger.debug("Device #{devname} removable parameter: #{removable.inspect}")
-
-      if STORAGE_CODES.include?(properties['MAJOR'].to_i)
-        @logger.debug("Device #{devname} seems to be appropriate")
-        # Exclude LVM volumes (in CentOS - 253, in Ubuntu - 252) using additional check
-        unless properties['DEVPATH'].include?('virtual')
-          @blocks << {
-            :name => basename_dir,
-            :disk => _disk_path_by_name(devname) || devname,
-            :extra => _disk_id_by_name(devname) || [],
-            :removable => removable,
-          }
-        end
-      end
-    end
-    @logger.debug("Final list of physical devices is: #{@blocks.inspect}")
-    @blocks
+  def _udev_symlink(kname)
+    stdin, stdout, stderr = Open3.popen3("udevadm info --query=symlink --name=#{kname}")
+    stdout.read.split(' ')
   end
 
   def _is_virtualbox
