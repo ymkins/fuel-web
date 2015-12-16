@@ -304,19 +304,27 @@ class NodeAgent
     detailed_meta
   end
 
-  def _lsblk(cmdline=nil)
-    cmdline ||= "lsblk -Pbo 'NAME,KNAME,MAJ:MIN,RM,SIZE,TYPE,MODEL'"
+  def _lsblk()
     lsblk = {
       # kname => {}
     }
+    # lsblk -Pbo 'NAME,KNAME,MAJ:MIN,RM,SIZE,TYPE,MODEL'
+    # lsblk fails to determine the multipath devices
+    # when device was partitioned and used previously
+    cmds = [
+      "lsblk -Pbdo 'NAME,KNAME,MAJ:MIN,RM,SIZE,TYPE,MODEL'",
+      "find '/dev/mapper/' -xtype 'b' | xargs lsblk -Pbdo 'NAME,KNAME,MAJ:MIN,RM,SIZE,TYPE,MODEL'",
+    ]
 
-    stdin, stdout, stderr = Open3.popen3(cmdline)
-    stdout.each_line { |line|
-      h = {}
-      line.scan(/([^\s=]+)="([^"]*)"/).each { |k, v|
-        h[k] = v
+    cmds.each { |cmdline|
+      stdin, stdout, stderr = Open3.popen3(cmdline)
+      stdout.each_line { |line|
+        h = {}
+        line.scan(/([^\s=]+)="([^"]*)"/).each { |k, v|
+          h[k] = v
+        }
+        lsblk[h['KNAME']] = h
       }
-      lsblk[h['KNAME']] = h
     }
 
     lsblk
