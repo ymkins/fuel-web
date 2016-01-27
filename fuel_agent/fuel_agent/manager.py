@@ -472,6 +472,44 @@ class Manager(object):
                 f.write('UUID=%s %s %s defaults 0 0\n' %
                         (mount2uuid[fs.mount], fs.mount, fs.type))
 
+        is_multipath = False
+        for parted in self.driver.partition_scheme.parteds:
+            for prt in parted.partitions:
+                if prt.device.startswith('/dev/mapper'):
+                    is_multipath = True
+                    break
+            if is_multipath:
+                break
+
+        if is_multipath:
+            LOG.debug('--- Rebuild initramfs with multipath ---')
+            cmd = ['cp', '/etc/multipath.conf', chroot + '/etc']
+            utils.execute(*cmd, run_as_root=True, check_exit_code=False)
+            cmd = ['cp', '-r', '/etc/multipath', chroot + '/etc']
+            utils.execute(*cmd, run_as_root=True, check_exit_code=False)
+
+            for dracut in ('/sbin/dracut', '/usr/sbin/dracut'):
+                if os.path.isfile(chroot + dracut):
+                    cmd = ['chroot', chroot, dracut, '--force',
+                           '--add', 'multipath',
+                           '--include', '/etc/multipath', '/etc/multipath',
+                           '/boot/' + initrd, kernel.replace('vmlinuz-', '', 1)]
+                    stdout, stderr = utils.execute(*cmd, run_as_root=True,
+                                                   check_exit_code=False)
+                    if stdout or stderr:
+                        LOG.debug('#dracut: {0}\n#stderr: {1}'.
+                                  format(stdout, stderr))
+                    break
+            else:
+                LOG.debug('#dracut not found, try update-initramfs')
+                cmd = ['chroot', chroot, '/usr/sbin/update-initramfs',
+                       '-u', '-k', 'all', '-b', '/boot']
+                stdout, stderr = utils.execute(*cmd, run_as_root=True,
+                                               check_exit_code=False)
+                if stdout or stderr:
+                    LOG.debug('#update-initramfs: {0}\n#stderr: {1}'.
+                              format(stdout, stderr))
+
         self.umount_target(chroot)
 
     def do_reboot(self):
