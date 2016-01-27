@@ -528,6 +528,7 @@ class NailgunBuildImage(BaseDataDriver):
         "lvm2",
         "mcollective",
         "mdadm",
+        "multipath-tools-boot",
         "nailgun-agent",
         "nailgun-mcagents",
         "nailgun-net-check",
